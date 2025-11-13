@@ -1,0 +1,234 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Gaze Game</title>
+  <style>
+    body{margin:0;padding:0;background:#222}
+    canvas{width:90vw; height:90vh; display:block; margin:5vh auto; background:#000}
+  </style>
+</head>
+<body>
+  <video id="video" playsinline style="display:none"></video>
+  <canvas id="canvas"></canvas>
+
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/face_mesh.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+
+<script>
+const video = document.getElementById('video');
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+canvas.width = window.innerWidth * 0.9;
+canvas.height = window.innerHeight * 0.9;
+
+// State
+let rawGaze = {x: 0.5, y: 0.5};
+let smoothGaze = {x: 0.5, y: 0.5};
+let calibrated = false;
+let calibrationData = [];
+let calibrationStep = 0;
+const calibrationTargets = [
+  {x: 0.5, y: 0.5, color: 'green', text: 'Click the exact center of the green dot'},
+  {x: 0.15, y: 0.15, color: 'blue', text: ''},
+  {x: 0.85, y: 0.15, color: 'red', text: ''},
+  {x: 0.85, y: 0.85, color: 'yellow', text: ''},
+  {x: 0.15, y: 0.85, color: 'purple', text: ''}
+];
+
+// Game
+let score = 0;
+let blocks = [];
+let speed = 0.001;
+let lastSpawn = Date.now();
+
+// MediaPipe setup
+const faceMesh = new FaceMesh({
+  locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`
+});
+faceMesh.setOptions({
+  maxNumFaces: 1,
+  refineLandmarks: true,
+  minDetectionConfidence: 0.5,
+  minTrackingConfidence: 0.5
+});
+
+const IRIS_LEFT = [468, 469, 470, 471, 472];
+const IRIS_RIGHT = [473, 474, 475, 476, 477];
+
+function avgLandmarks(indices, landmarks) {
+  let x = 0, y = 0, count = 0;
+  for (const i of indices) {
+    if (landmarks[i]) {
+      x += landmarks[i].x;
+      y += landmarks[i].y;
+      count++;
+    }
+  }
+  return count > 0 ? {x: x/count, y: y/count} : null;
+}
+
+faceMesh.onResults((results) => {
+  if (results.multiFaceLandmarks && results.multiFaceLandmarks.length > 0) {
+    const lm = results.multiFaceLandmarks[0];
+    const left = avgLandmarks(IRIS_LEFT, lm);
+    const right = avgLandmarks(IRIS_RIGHT, lm);
+    if (left && right) {
+      rawGaze = {x: 1 - (left.x + right.x) / 2, y: (left.y + right.y) / 2};
+    }
+  }
+});
+
+const camera = new Camera(video, {
+  onFrame: async () => {
+    await faceMesh.send({image: video});
+  },
+  width: 640,
+  height: 480
+});
+camera.start();
+
+// Click handler
+canvas.addEventListener('click', (e) => {
+  if (calibrationStep < calibrationTargets.length) {
+    const rect = canvas.getBoundingClientRect();
+    const clickX = (e.clientX - rect.left) / canvas.width;
+    const clickY = (e.clientY - rect.top) / canvas.height;
+    
+    if (calibrationStep > 0) { // Skip first center click
+      calibrationData.push({
+        screen: {x: clickX, y: clickY},
+        gaze: {x: rawGaze.x, y: rawGaze.y}
+      });
+    }
+    
+    calibrationStep++;
+    
+    if (calibrationStep >= calibrationTargets.length) {
+      calibrated = true;
+      // Compute calibration bounds
+      const gx = calibrationData.map(d => d.gaze.x);
+      const gy = calibrationData.map(d => d.gaze.y);
+      window.minGx = Math.min(...gx);
+      window.maxGx = Math.max(...gx);
+      window.minGy = Math.min(...gy);
+      window.maxGy = Math.max(...gy);
+    }
+  }
+});
+
+function mapGaze(raw) {
+  if (!calibrated) return {x: raw.x, y: raw.y};
+  
+  const u = (raw.x - window.minGx) / (window.maxGx - window.minGx);
+  const v = (raw.y - window.minGy) / (window.maxGy - window.minGy);
+  
+  const TL = calibrationData[0].screen;
+  const TR = calibrationData[1].screen;
+  const BR = calibrationData[2].screen;
+  const BL = calibrationData[3].screen;
+  
+  return {
+    x: (1-u)*(1-v)*TL.x + u*(1-v)*TR.x + u*v*BR.x + (1-u)*v*BL.x,
+    y: (1-u)*(1-v)*TL.y + u*(1-v)*TR.y + u*v*BR.y + (1-u)*v*BL.y
+  };
+}
+
+function drawCursor(x, y) {
+  ctx.strokeStyle = 'cyan';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(x, y - 12);
+  ctx.lineTo(x - 8, y + 8);
+  ctx.lineTo(x + 8, y + 8);
+  ctx.closePath();
+  ctx.stroke();
+}
+
+function drawCircle(x, y, r, color) {
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  ctx.arc(x, y, r, 0, Math.PI * 2);
+  ctx.fill();
+}
+
+function gameLoop() {
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  
+  // Update smooth gaze
+  const mapped = mapGaze(rawGaze);
+  smoothGaze.x += (mapped.x - smoothGaze.x) * 0.3;
+  smoothGaze.y += (mapped.y - smoothGaze.y) * 0.3;
+  smoothGaze.x = Math.max(0, Math.min(1, smoothGaze.x));
+  smoothGaze.y = Math.max(0, Math.min(1, smoothGaze.y));
+  
+  // Calibration
+  if (calibrationStep < calibrationTargets.length) {
+    const target = calibrationTargets[calibrationStep];
+    drawCircle(target.x * canvas.width, target.y * canvas.height, 15, target.color);
+    if (target.text) {
+      ctx.fillStyle = 'white';
+      ctx.font = '18px Arial';
+      ctx.fillText(target.text, 20, canvas.height - 20);
+    }
+    drawCursor(smoothGaze.x * canvas.width, smoothGaze.y * canvas.height);
+    requestAnimationFrame(gameLoop);
+    return;
+  }
+  
+  // Game
+  const now = Date.now();
+  if (now - lastSpawn > 2000) {
+    const size = 0.05 + Math.random() * 0.08;
+    blocks.push({
+      x: Math.random() * (1 - size),
+      y: 0,
+      size: size,
+      speed: speed,
+      color: `hsl(${Math.random() * 360}, 70%, 60%)`
+    });
+    lastSpawn = now;
+    speed += 0.00003;
+  }
+  
+  // Update/draw blocks
+  for (let i = blocks.length - 1; i >= 0; i--) {
+    const b = blocks[i];
+    b.y += b.speed;
+    
+    // Check catch
+    if (smoothGaze.x >= b.x && smoothGaze.x <= b.x + b.size &&
+        smoothGaze.y >= b.y && smoothGaze.y <= b.y + b.size) {
+      score += Math.round(50 / b.size);
+      blocks.splice(i, 1);
+      continue;
+    }
+    
+    // Check floor
+    if (b.y > 1) {
+      alert(`Game Over! Score: ${score}`);
+      score = 0;
+      blocks = [];
+      speed = 0.001;
+      lastSpawn = now;
+      break;
+    }
+    
+    ctx.fillStyle = b.color;
+    ctx.fillRect(b.x * canvas.width, b.y * canvas.height, b.size * canvas.width, b.size * canvas.height);
+  }
+  
+  drawCursor(smoothGaze.x * canvas.width, smoothGaze.y * canvas.height);
+  
+  ctx.fillStyle = 'white';
+  ctx.font = '24px Arial';
+  ctx.fillText(`Score: ${score}`, 10, 30);
+  
+  requestAnimationFrame(gameLoop);
+}
+
+gameLoop();
+</script>
+</body>
+</html>
