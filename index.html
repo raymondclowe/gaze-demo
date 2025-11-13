@@ -39,6 +39,7 @@ const calibrationTargets = [
 // Game
 let score = 0;
 let blocks = [];
+let animatingBlocks = []; // Blocks being animated on catch
 let speed = 0.001;
 let lastSpawn = Date.now();
 
@@ -156,10 +157,22 @@ function gameLoop() {
   ctx.fillStyle = '#000';
   ctx.fillRect(0, 0, canvas.width, canvas.height);
   
-  // Update smooth gaze
+  // Update smooth gaze with damping for small movements
   const mapped = mapGaze(rawGaze);
-  smoothGaze.x += (mapped.x - smoothGaze.x) * 0.3;
-  smoothGaze.y += (mapped.y - smoothGaze.y) * 0.3;
+  const dx = mapped.x - smoothGaze.x;
+  const dy = mapped.y - smoothGaze.y;
+  const distance = Math.sqrt(dx * dx + dy * dy);
+  
+  // Apply stronger damping for small movements, less for large jumps
+  let damping = 0.3;
+  if (distance < 0.05) {
+    damping = 0.15; // More damping for small movements to reduce jitter
+  } else if (distance > 0.2) {
+    damping = 0.5; // Less damping for large jumps to keep responsiveness
+  }
+  
+  smoothGaze.x += dx * damping;
+  smoothGaze.y += dy * damping;
   smoothGaze.x = Math.max(0, Math.min(1, smoothGaze.x));
   smoothGaze.y = Math.max(0, Math.min(1, smoothGaze.y));
   
@@ -181,15 +194,57 @@ function gameLoop() {
   const now = Date.now();
   if (now - lastSpawn > 2000) {
     const size = 0.05 + Math.random() * 0.08;
+    const points = Math.round(50 / size);
     blocks.push({
       x: Math.random() * (1 - size),
       y: 0,
       size: size,
       speed: speed,
-      color: `hsl(${Math.random() * 360}, 70%, 60%)`
+      color: `hsl(${Math.random() * 360}, 70%, 60%)`,
+      points: points
     });
     lastSpawn = now;
     speed += 0.00003;
+  }
+  
+  // Update/draw animating blocks
+  for (let i = animatingBlocks.length - 1; i >= 0; i--) {
+    const b = animatingBlocks[i];
+    const elapsed = now - b.startTime;
+    const progress = Math.min(elapsed / 500, 1); // 0.5 second animation
+    
+    if (progress >= 1) {
+      animatingBlocks.splice(i, 1);
+      continue;
+    }
+    
+    const currentSize = b.size * (1 - progress);
+    const centerOffset = (b.size - currentSize) / 2;
+    
+    ctx.save();
+    ctx.globalAlpha = 1 - progress * 0.5; // Fade out
+    ctx.fillStyle = b.color;
+    ctx.fillRect(
+      (b.x + centerOffset) * canvas.width,
+      (b.y + centerOffset) * canvas.height,
+      currentSize * canvas.width,
+      currentSize * canvas.height
+    );
+    
+    // Draw points during animation
+    if (currentSize > 0.02) {
+      ctx.fillStyle = 'white';
+      const fontSize = Math.max(12, currentSize * canvas.width * 0.4);
+      ctx.font = `bold ${fontSize}px Arial`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(
+        `+${b.points}`,
+        (b.x + b.size / 2) * canvas.width,
+        (b.y + b.size / 2) * canvas.height
+      );
+    }
+    ctx.restore();
   }
   
   // Update/draw blocks
@@ -200,7 +255,16 @@ function gameLoop() {
     // Check catch
     if (smoothGaze.x >= b.x && smoothGaze.x <= b.x + b.size &&
         smoothGaze.y >= b.y && smoothGaze.y <= b.y + b.size) {
-      score += Math.round(50 / b.size);
+      score += b.points;
+      // Start animation
+      animatingBlocks.push({
+        x: b.x,
+        y: b.y,
+        size: b.size,
+        color: b.color,
+        points: b.points,
+        startTime: now
+      });
       blocks.splice(i, 1);
       continue;
     }
@@ -210,13 +274,27 @@ function gameLoop() {
       alert(`Game Over! Score: ${score}`);
       score = 0;
       blocks = [];
+      animatingBlocks = [];
       speed = 0.001;
       lastSpawn = now;
       break;
     }
     
+    // Draw block
     ctx.fillStyle = b.color;
     ctx.fillRect(b.x * canvas.width, b.y * canvas.height, b.size * canvas.width, b.size * canvas.height);
+    
+    // Draw points on block
+    ctx.fillStyle = 'white';
+    const fontSize = Math.max(12, b.size * canvas.width * 0.4);
+    ctx.font = `bold ${fontSize}px Arial`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(
+      b.points,
+      (b.x + b.size / 2) * canvas.width,
+      (b.y + b.size / 2) * canvas.height
+    );
   }
   
   drawCursor(smoothGaze.x * canvas.width, smoothGaze.y * canvas.height);
